@@ -1,0 +1,6 @@
+
+rm smart_playlist.log
+
+nohup python main.py > smart_playlist.log 2>&1 </dev/null &
+
+

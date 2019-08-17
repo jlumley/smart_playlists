@@ -7,6 +7,7 @@ import yaml
 
 from ansible.parsing.vault import VaultLib
 from datetime import datetime
+from multiprocessing import Pool
 from pprint import pprint
 
 path = '/' + os.path.join(*os.path.abspath(__file__).split('/')[1:-2])
@@ -21,7 +22,10 @@ logging.basicConfig(level=logging.DEBUG,
                     handlers=[logging.StreamHandler()])
 
 def open_vault(vaultfile=''):
-    vault = VaultLib(getpass.getpass('Vault Password: '))
+    vault_pw = os.environ.get('VAULT_PW')
+    if not vault_pw:
+        vault_pw = getpass.getpass('Vault Password: ')
+    vault = VaultLib(vault_pw)
     vault_secret = vault.decrypt(open(vaultfile).read())
     
     return yaml.load(vault_secret, Loader=yaml.SafeLoader)
@@ -82,10 +86,10 @@ def history_playlist(sp, user_id):
 
         # if it does update description
         else:
-            sp.user_playlist_change_details(user_id, 
-                                            history_playlist_id,
-                                            description=updated_description)
-
+            resp = sp.user_playlist_change_details(user_id, 
+                                                   history_playlist_id,
+                                                   description=updated_description)
+            logging.info(resp)
         
         sp.user_playlist_replace_tracks(user_id, 
                                         history_playlist_id,

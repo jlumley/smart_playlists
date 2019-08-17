@@ -1,6 +1,12 @@
 # ignore vaultfile
 vaultfile.yml
 
+# logfile
+*.log
+
+# spotify access token
+.cache-*
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
