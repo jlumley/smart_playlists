@@ -27,12 +27,12 @@ def open_vault(vaultfile=''):
         vault_pw = getpass.getpass('Vault Password: ')
     vault = VaultLib(vault_pw)
     vault_secret = vault.decrypt(open(vaultfile).read())
-    
+
     return yaml.load(vault_secret, Loader=yaml.SafeLoader)
 
 
 def get_auth_token(username,
-                   scope, 
+                   scope,
                    client_id=None,
                    client_secret=None,
                    redirect_uri=None):
@@ -47,7 +47,7 @@ def get_auth_token(username,
 def history_playlist(sp, user_id):
     '''
     Generate private playlist of the last 50 songs played
-    
+
     regenerate playlist every 5 minutes
 
     Args:
@@ -63,8 +63,8 @@ def history_playlist(sp, user_id):
         recent_track_ids = [_track['track']['id'] for _track in recently_played['items']
                             if True]
         logging.debug(recent_track_ids)
-        
-        # update "History" playlist with recently played tracks
+
+       # update "History" playlist with recently played tracks
         # get "History" playlist id
         history_playlist_id = None
         user_playlists = sp.current_user_playlists()
@@ -90,7 +90,7 @@ def history_playlist(sp, user_id):
                                                    history_playlist_id,
                                                    description=updated_description)
             logging.info(resp)
-        
+
         sp.user_playlist_replace_tracks(user_id, 
                                         history_playlist_id,
                                         recent_track_ids) 
@@ -98,14 +98,20 @@ def history_playlist(sp, user_id):
 
 
 def main():
+    while (True):
+        credentials = open_vault(os.path.join(path, 'vaultfile.yml'))
 
-    credentials = open_vault(os.path.join(path, 'vaultfile.yml'))
+        token = get_auth_token(credentials.get('username'),
+                               scope='playlist-modify-private playlist-read-private user-read-recently-played',
+                               client_id=credentials.get('client_id'),
+                               client_secret=credentials.get('client_secret'),
+                               redirect_uri=credentials.get('redirect_uri'))
 
-    token = get_auth_token(credentials.get('username'),
-                           scope='playlist-modify-private playlist-read-private user-read-recently-played',
-                           client_id=credentials.get('client_id'),
-                           client_secret=credentials.get('client_secret'),
-                           redirect_uri=credentials.get('redirect_uri'))
-
-    sp = spotipy.Spotify(auth=token)
-    history_playlist(sp, credentials.get('username')) 
+        sp = spotipy.Spotify(auth=token)
+        try:
+            history_playlist(sp, credentials.get('username')) 
+        except spotipy.client.SpotifyException as e:
+            if 'The access token expired' in e.message:
+                logging.warning('Token Expired...')
+            else:
+                logging.exception(e.message)
