@@ -1,13 +1,15 @@
 import getpass
 import logging
 import os
+import random
+import signal
 import sys
 import time
 import yaml
 
 from ansible.parsing.vault import VaultLib
 from datetime import datetime
-from multiprocessing import Pool
+from multiprocessing import Process
 from pprint import pprint
 
 path = '/' + os.path.join(*os.path.abspath(__file__).split('/')[1:-2])
@@ -31,30 +33,34 @@ def open_vault(vaultfile=''):
     return yaml.load(vault_secret, Loader=yaml.SafeLoader)
 
 
-def get_auth_token(username,
-                   scope,
-                   client_id=None,
-                   client_secret=None,
-                   redirect_uri=None):
+def get_auth_token():
+    ''' '''
+    credentials = open_vault(os.path.join(path, 'vaultfile.yml'))
+    scope = ['user-top-read',
+             'user-read-private',
+             'playlist-read-private',
+             'user-read-recently-played']
+    token = util.prompt_for_user_token(credentials.get('username'),
+                                       scope=' '.join(scope),
+                                       client_id=credentials.get('client_id'),
+                                       client_secret=credentials.get('client_secret'),
+                                       redirect_uri=credentials.get('redirect_uri'))
 
-    return util.prompt_for_user_token(username,
-                                      scope=scope,
-                                      client_id=client_id,
-                                      client_secret=client_secret,
-                                      redirect_uri=redirect_uri)
+    
+    return (credentials.get('username'), token)
 
 
-def history_playlist(sp, user_id):
+def history_playlist(sp, user_id, interval):
     '''
     Generate private playlist of the last 50 songs played
 
-    regenerate playlist every 5 minutes
+     Args:
+        - sp       (Spotify Oject) : spotipy client Spotify Object
+        - user_id  (str)           : Spotify user id
+        - interval (int)           : interval to wait before regenerating playlist
 
-    Args:
-        - sp      (Spotify Oject) : spotipy client Spotify Object
-        - user_id (str):            Spotify user id
     Returns:
-        None
+       None
     '''
 
     while (True):
@@ -64,7 +70,7 @@ def history_playlist(sp, user_id):
                             if True]
         logging.debug(recent_track_ids)
 
-       # update "History" playlist with recently played tracks
+        # update "History" playlist with recently played tracks
         # get "History" playlist id
         history_playlist_id = None
         user_playlists = sp.current_user_playlists()
@@ -94,24 +100,131 @@ def history_playlist(sp, user_id):
         sp.user_playlist_replace_tracks(user_id, 
                                         history_playlist_id,
                                         recent_track_ids) 
-        time.sleep(180)
+        time.sleep(interval)
 
 
-def main():
+def top_artists_playlist(sp, user_id, interval):
+    ''' 
+    Generate private playlist based on recommendations from the top artists played in the past week
+
+      Args:
+        - sp       (Spotify Oject) : spotipy client Spotify Object
+        - user_id  (str)           : Spotify user id
+        - interval (int)           : interval to wait before regenerating playlist
+
+    Returns:
+        None
+    '''
+
+
     while (True):
-        credentials = open_vault(os.path.join(path, 'vaultfile.yml'))
+        # get list of top 3 artists in the past month
+        top_artists = sp.current_user_top_artists(limit=3,
+                                                 time_range='short_term')
+        
+        top_artists_ids = [artist['id'] for artist in top_artists['items'] if True]       
+        logging.debug(top_artists_ids)
+        
+        suggested_artists = []
+        for artist_id in top_artists_ids:
+            suggested_artists.append(sp.artist_related_artists(artist_id)['artists'][0]['id'])
+            
+        top_artists_ids += suggested_artists
+        del top_artists_ids[random.randint(0,4)]
 
-        token = get_auth_token(credentials.get('username'),
-                               scope='playlist-modify-private playlist-read-private user-read-recently-played',
-                               client_id=credentials.get('client_id'),
-                               client_secret=credentials.get('client_secret'),
-                               redirect_uri=credentials.get('redirect_uri'))
+        recommended_tracks = sp.recommendations(seed_artists=top_artists_ids,
+                                                country='CA',
+                                                limit=50)
+        logging.debug(recommended_tracks)
 
+        track_ids = [track['id'] for track in recommended_tracks['tracks'] if True]
+       
+        top_artists_playlist_id = None
+        user_playlists = sp.current_user_playlists()
+        for _playlist in user_playlists['items']:
+            if _playlist['name'] == 'Top Artists':
+                top_artists_playlist_id = _playlist['id']
+                logging.debug(_playlist)
+
+        updated_description = ('Generated by Smart Playlists - ' +
+                               ' {} - '.format(datetime.strftime(datetime.now(), '%c')) +
+                               ' https://github.com/jlumley/smart_playlists')
+        # if playlist doesn't exist create it
+        if not top_artists_playlist_id:
+            _playlist = sp.user_playlist_create(user_id, 
+                                               'Top Artists', 
+                                                public=False,
+                                                description=updated_description)
+            top_artists_playlist_id = _playlist['id']
+
+        # if it does update description
+        else:
+            resp = sp.user_playlist_change_details(user_id, 
+                                                   top_artists_playlist_id,
+                                                   description=updated_description)
+            logging.info(resp)
+
+        sp.user_playlist_replace_tracks(user_id, 
+                                        top_artists_playlist_id,
+                                        track_ids) 
+        time.sleep(interval)
+
+
+
+
+def generate_playlist(playlist, interval):
+    ''' 
+    Wrapper function for playlist generator to handle token expiration and other housekeeping activities
+    
+    Args:
+        - playlist (method) : playlist_generator function accepting Spotify object and username and interval
+        - interval (int)    : seconds to wait before regenerating playlist
+    
+    Returns:
+        None
+    '''
+
+    while (True):
+        username, token = get_auth_token()
         sp = spotipy.Spotify(auth=token)
         try:
-            history_playlist(sp, credentials.get('username')) 
+            playlist(sp, username, interval) 
         except spotipy.client.SpotifyException as e:
             if 'The access token expired' in e.message:
                 logging.warning('Token Expired...')
             else:
                 logging.exception(e.message)
+        except Exception as e:
+            logging.error('Something went wrong.')
+            logging.exception(e.message)
+
+def main():
+
+    def signal_handler(sig, frame):
+        ''' 
+        Gracefully kill off child processes when SIGINT signal received
+
+        Args:
+            - sig   (int):   signal received
+            - frame (frame): current python frame
+
+        '''
+        logging.info('Killing Child Processes.')
+        for p in p_list:
+            p.terminate()
+        sys.exit(0)
+
+    playlist_args = [(top_artists_playlist, 43200,),
+                    (history_playlist, 180,)]
+
+    p_list = list()
+    for args in playlist_args:
+
+        p = Process(target=generate_playlist, args=args)
+        p.start()
+        p_list.append(p)
+
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.pause()
+
+
